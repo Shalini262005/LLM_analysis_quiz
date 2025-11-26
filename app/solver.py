@@ -11,6 +11,7 @@ import httpx
 import pandas as pd
 from playwright.sync_api import sync_playwright
 from .utils.pdf_utils import extract_tables_from_pdf
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -215,12 +216,24 @@ def solve_quiz(email, secret, url, deadline):
                         result["scraped_secret_candidate"] = secret_code
                         # If found, prepare payload and submit to submit_url (resolve relative)
                         if secret_code:
+                            parsed_url = urlparse(scrape_url)
+                            canonical_scrape_url = urlunparse(parsed_url._replace(query="", params="", fragment=""))
+
                             payload = {
                                 "email": email,
                                 "secret": secret,
-                                "url": scrape_url,
+                                # canonical URL WITHOUT query params
+                                "url": canonical_scrape_url,
                                 "answer": secret_code
                             }
+
+                            logger.debug(
+                                "Posting scraped secret payload to submit_url=%s resolved=%s payload=%s",
+                                submit_url,
+                                resolve_url(submit_url, scrape_url),
+                                {"email": email, "url": canonical_scrape_url, "answer": secret_code}
+                            )
+
                             if submit_url:
                                 submit_result = try_submit_json(submit_url, payload, base_url=scrape_url)
                                 result["submit_result"] = submit_result
