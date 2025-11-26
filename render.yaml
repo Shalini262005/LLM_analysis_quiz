@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: llm-quiz-solver
+    env: docker
+    region: oregon
+    plan: starter
+    repo: https://github.com/<YOUR_USER_OR_ORG>/<REPO_NAME>
+    branch: main
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: TIME_BUDGET
+        value: "180"
+      - key: LOG_LEVEL
+        value: "INFO"
+# Set QUIZ_SECRET in Render dashboard (do not put secret in repo)
