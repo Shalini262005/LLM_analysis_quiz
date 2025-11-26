@@ -91,25 +91,51 @@ def try_submit_json(submit_url, payload, base_url=None, timeout=30.0):
 
 def extract_secret_from_text(text):
     """
-    Attempt to find a secret-like token in text. Heuristics:
-    - look for lines containing 'secret' and capture following token
-    - otherwise capture first long alphanumeric token
+    Heuristics to extract a 'secret' token from page text.
+    Priority:
+      1) Numeric token (3+ digits) appearing after phrases like 'secret', 'secret code', 'code is', etc.
+      2) Longest numeric token on the page (>=3 digits).
+      3) Alphanumeric token after the word 'secret' (fallback).
+      4) First long alphanumeric token (fallback).
+    Returns token string or None.
     """
     if not text:
         return None
-    # look for explicit 'secret' patterns
-    m = re.search(r"secret\s*(?:code|is|:|=)?\s*['\"]?([A-Za-z0-9_\-]{4,64})['\"]?", text, flags=re.IGNORECASE)
-    if m:
-        return m.group(1)
-    # common phrasing: "the secret code is abc123"
-    m2 = re.search(r"the secret code (?:is|:)?\s*([A-Za-z0-9_\-]{4,64})", text, flags=re.IGNORECASE)
+
+    # Normalize whitespace
+    txt = " ".join(text.split())
+
+    # 1) look for patterns like "secret code is 21288" or "Secret: 21288"
+    patterns = [
+        r"(?:secret|secret code|the secret code|secret:|secret=)\s*(?:is|:|-)?\s*([0-9]{3,64})",
+        r"(?:code|code is|code:)\s*([0-9]{3,64})",
+        r"(?:secret|secret code|code)\s*(?:is|:|=)?\s*['\"]?([A-Za-z0-9_\-]{3,64})['\"]?"
+    ]
+    for pat in patterns:
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if m:
+            token = m.group(1)
+            if token:
+                return token
+
+    # 2) fallback: pick the longest numeric token (3+ digits) on the page
+    numeric_tokens = re.findall(r"\d{3,64}", txt)
+    if numeric_tokens:
+        # choose the longest numeric token (likely the secret)
+        numeric_tokens.sort(key=lambda s: -len(s))
+        return numeric_tokens[0]
+
+    # 3) fallback: alphanumeric token after 'secret' (if numeric not found)
+    m2 = re.search(r"(?:secret|secret code|code)\s*(?:is|:|=)?\s*['\"]?([A-Za-z0-9_\-]{4,64})['\"]?", txt, flags=re.IGNORECASE)
     if m2:
         return m2.group(1)
-    # fallback: first long token (avoid common words)
-    tokens = re.findall(r"[A-Za-z0-9_\-]{6,64}", text)
+
+    # 4) last resort: any long alphanumeric token
+    tokens = re.findall(r"[A-Za-z0-9_\-]{6,64}", txt)
     for t in tokens:
-        if not re.fullmatch(r"https?|http|submit|demo|page|email|secret", t, flags=re.IGNORECASE):
+        if not re.fullmatch(r"https?|http|submit|demo|page|email|secret|code", t, flags=re.IGNORECASE):
             return t
+
     return None
 
 def solve_quiz(email, secret, url, deadline):
