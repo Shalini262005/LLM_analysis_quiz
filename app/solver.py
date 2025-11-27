@@ -5,15 +5,15 @@ import re
 import os
 import tempfile
 import logging
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 import pandas as pd
 from playwright.sync_api import sync_playwright
 from .utils.pdf_utils import extract_tables_from_pdf
-from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
+
 
 def find_submit_url_from_page(page):
     """
@@ -45,6 +45,7 @@ def find_submit_url_from_page(page):
         logger.debug("find_submit_url error: %s", e)
     return None
 
+
 def is_numeric_series(series, threshold=0.6):
     s = series.astype(str).str.replace(r"[^0-9\.\-]", "", regex=True)
     parsed = pd.to_numeric(s, errors="coerce")
@@ -53,6 +54,7 @@ def is_numeric_series(series, threshold=0.6):
     if total == 0:
         return False
     return (non_null / total) >= threshold
+
 
 def resolve_url(candidate: str, base: str):
     """
@@ -72,6 +74,7 @@ def resolve_url(candidate: str, base: str):
         return "https:" + candidate
     return candidate
 
+
 def try_submit_json(submit_url, payload, base_url=None, timeout=30.0):
     """
     POST JSON to submit_url, resolving relative URLs against base_url.
@@ -89,6 +92,7 @@ def try_submit_json(submit_url, payload, base_url=None, timeout=30.0):
         return {"status_code": r.status_code, "body": body, "posted_to": final_url}
     except Exception as e:
         return {"error": str(e), "attempted_url": submit_url, "resolved_url": (resolve_url(submit_url, base_url) if base_url else None)}
+
 
 def extract_secret_from_text(text):
     """
@@ -138,6 +142,7 @@ def extract_secret_from_text(text):
             return t
 
     return None
+
 
 def solve_quiz(email, secret, url, deadline):
     """
@@ -216,14 +221,18 @@ def solve_quiz(email, secret, url, deadline):
                         result["scraped_secret_candidate"] = secret_code
                         # If found, prepare payload and submit to submit_url (resolve relative)
                         if secret_code:
+                            # build canonical scrape url (without query string)
                             parsed_url = urlparse(scrape_url)
                             canonical_scrape_url = urlunparse(parsed_url._replace(query="", params="", fragment=""))
+
+                            # IMPORTANT: use the start_url (task URL) as the 'url' field the submit endpoint expects.
+                            # fallback to canonical_scrape_url if result["start_url"] is missing.
+                            payload_url = result.get("start_url") or canonical_scrape_url
 
                             payload = {
                                 "email": email,
                                 "secret": secret,
-                                # canonical URL WITHOUT query params
-                                "url": canonical_scrape_url,
+                                "url": payload_url,
                                 "answer": secret_code
                             }
 
@@ -231,7 +240,7 @@ def solve_quiz(email, secret, url, deadline):
                                 "Posting scraped secret payload to submit_url=%s resolved=%s payload=%s",
                                 submit_url,
                                 resolve_url(submit_url, scrape_url),
-                                {"email": email, "url": canonical_scrape_url, "answer": secret_code}
+                                {"email": email, "url": payload_url, "answer": secret_code}
                             )
 
                             if submit_url:
