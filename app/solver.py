@@ -14,7 +14,127 @@ from .utils.pdf_utils import extract_tables_from_pdf
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------
+# LLM helper / optional integration
+# ---------------------------
+ENABLE_LLM = os.getenv("ENABLE_LLM", "0") == "1"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+# prefer openai package if installed
+try:
+    import openai  # type: ignore
+    OPENAI_PY_AVAILABLE = True
+except Exception:
+    OPENAI_PY_AVAILABLE = False
 
+def llm_available():
+    return ENABLE_LLM and OPENAI_API_KEY is not None
+
+def llm_call_simple(system_prompt: str, user_prompt: str, max_tokens: int = 512):
+    """
+    Make a simple LLM call and return assistant text.
+    Uses openai package if available, otherwise uses httpx to call Chat Completions.
+    This wrapper is intentionally minimal and meant for short textual tasks:
+    - summarization
+    - extract secret/value
+    - answer extraction
+    """
+    if not llm_available():
+        raise RuntimeError("LLM not available (enable with ENABLE_LLM=1 and set OPENAI_API_KEY).")
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    # Prefer openai package if installed & configured
+    if OPENAI_PY_AVAILABLE:
+        try:
+            openai.api_key = OPENAI_API_KEY
+            resp = openai.ChatCompletion.create(
+                model=LLM_MODEL,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.0
+            )
+            return resp.choices[0].message["content"].strip()
+        except Exception as e:
+            logger.exception("openai package call failed: %s", e)
+            # fallthrough to httpx approach
+    # Fallback: httpx direct request to OpenAI-compatible endpoint (OpenAI API v1)
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": LLM_MODEL,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.0
+        }
+        r = httpx.post("https://api.openai.com/v1/chat/completions", json=payload, headers=headers, timeout=60.0)
+        r.raise_for_status()
+        j = r.json()
+        return j["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.exception("LLM httpx call failed: %s", e)
+        raise
+
+def detect_need_for_llm(page_text: str, page_html: str, links: list):
+    """
+    Very lightweight heuristics to decide if the page likely needs an LLM.
+    Returns a dict with flags and reasons.
+    """
+    reasons = {"need": False, "why": []}
+    if not page_text and not page_html:
+        return reasons
+
+    text = (page_text or "") + "\n" + (page_html or "")
+
+    # audio detection
+    if re.search(r"\.(mp3|wav|m4a|ogg)(\?|$)", ( " ".join(links) ).lower()) or re.search(r"\b(audio|listen|transcribe|speech|voice)\b", text, flags=re.IGNORECASE):
+        reasons["need"] = True
+        reasons["why"].append("transcription_audio")
+
+    # image / ocr detection
+    if re.search(r"\.(png|jpg|jpeg|tiff)(\?|$)", (" ".join(links)).lower()) or re.search(r"\b(image|photo|screenshot|ocr)\b", text, flags=re.IGNORECASE):
+        reasons["need"] = True
+        reasons["why"].append("ocr_image")
+
+    # summarization / complex instruction keywords
+    if re.search(r"\b(summarize|explain|interpret|visualize|plot|chart|transcribe|classify|predict)\b", text, flags=re.IGNORECASE):
+        reasons["need"] = True
+        reasons["why"].append("summarize_interpret")
+
+    # secret / code extraction might be helped by LLM if ambiguous wording
+    if re.search(r"\b(secret code|secret|code is|secret:|cutoff)\b", text, flags=re.IGNORECASE):
+        # this is also solvable without LLM in many cases, but LLM may disambiguate
+        reasons["need"] = True
+        reasons["why"].append("extract_secret_possible")
+
+    return reasons
+
+def llm_extract_answer_from_text(body_text: str, question_hint: str = None):
+    """
+    Ask the LLM (if available) to extract an answer from the page text.
+    question_hint can be used to instruct the LLM what to look for (e.g., 'find the cutoff' or 'extract secret code').
+    Returns assistant text or None.
+    """
+    try:
+        system = "You are a helpful assistant that extracts short machine-friendly answers from page text. Only return the answer, nothing else."
+        user_prompt = "Page text:\n\n" + (body_text or "")
+        if question_hint:
+            user_prompt = question_hint + "\n\n" + user_prompt
+        out = llm_call_simple(system, user_prompt, max_tokens=256)
+        return out
+    except Exception as e:
+        logger.debug("llm_extract_answer error: %s", e)
+        return None
+
+# ---------------------------
+# Existing helper functions (kept)
+# ---------------------------
 def find_submit_url_from_page(page):
     """
     Try to find a submit URL from form actions / anchors / data attributes.
@@ -45,7 +165,6 @@ def find_submit_url_from_page(page):
         logger.debug("find_submit_url error: %s", e)
     return None
 
-
 def is_numeric_series(series, threshold=0.6):
     s = series.astype(str).str.replace(r"[^0-9\.\-]", "", regex=True)
     parsed = pd.to_numeric(s, errors="coerce")
@@ -54,7 +173,6 @@ def is_numeric_series(series, threshold=0.6):
     if total == 0:
         return False
     return (non_null / total) >= threshold
-
 
 def resolve_url(candidate: str, base: str):
     """
@@ -74,7 +192,6 @@ def resolve_url(candidate: str, base: str):
         return "https:" + candidate
     return candidate
 
-
 def try_submit_json(submit_url, payload, base_url=None, timeout=30.0):
     """
     POST JSON to submit_url, resolving relative URLs against base_url.
@@ -92,7 +209,6 @@ def try_submit_json(submit_url, payload, base_url=None, timeout=30.0):
         return {"status_code": r.status_code, "body": body, "posted_to": final_url}
     except Exception as e:
         return {"error": str(e), "attempted_url": submit_url, "resolved_url": (resolve_url(submit_url, base_url) if base_url else None)}
-
 
 def extract_secret_from_text(text):
     """
@@ -143,7 +259,9 @@ def extract_secret_from_text(text):
 
     return None
 
-
+# ---------------------------
+# Main solver (keeps your flow, with LLM enhancements)
+# ---------------------------
 def solve_quiz(email, secret, url, deadline):
     """
     Visit the URL, attempt to extract the task, compute an answer, and post it to the
@@ -152,7 +270,7 @@ def solve_quiz(email, secret, url, deadline):
     if time.time() > deadline:
         raise TimeoutError("Deadline already passed")
 
-    result = {"start_url": url, "ts": time.time()}
+    result = {"start_url": url, "ts": time.time(), "llm": {"enabled": llm_available()}}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -174,6 +292,53 @@ def solve_quiz(email, secret, url, deadline):
         except Exception:
             body_text = None
             result["body_preview"] = None
+
+        # collect anchors for detection
+        anchors_texts = []
+        try:
+            anchors = page.query_selector_all("a")
+            for a in anchors:
+                try:
+                    href = a.get_attribute("href")
+                    text = a.inner_text()
+                    anchors_texts.append(str(href or "") + " " + str(text or ""))
+                except Exception:
+                    continue
+        except Exception:
+            anchors_texts = []
+
+        # Automatic LLM detection & optional attempt
+        try:
+            detection = detect_need_for_llm(body_text, page.content(), anchors_texts)
+            result["llm_detection"] = detection
+            if detection.get("need") and llm_available():
+                # Attempt an LLM-based extraction first (non-destructive)
+                try:
+                    # If there's audio, ask LLM to say we need transcription (we handle audio later)
+                    hint = "Extract a short machine readable answer from the following page text. If a numeric secret/cutoff is present return only that number. If the page instructs to download a CSV/AUDIO/IMAGE and compute an answer, say 'NEEDS_DOWNLOAD' and what to download (url or pattern)."
+                    # include a short preview (avoid huge payloads)
+                    preview_text = (body_text or "")[:4000]
+                    llm_resp = llm_extract_answer_from_text(preview_text, question_hint=hint)
+                    result["llm_quick_response"] = llm_resp
+                    # Interpret LLM response heuristically
+                    if llm_resp:
+                        # if LLM returned a clean number -> treat as answer
+                        m_num = re.search(r"\b([0-9]{2,64})\b", llm_resp)
+                        if m_num:
+                            candidate = m_num.group(1)
+                            result["llm_extracted_numeric_candidate"] = candidate
+                            payload = {"email": email, "secret": secret, "url": url, "answer": candidate}
+                            if find_submit_url_from_page(page):
+                                submit_url = find_submit_url_from_page(page)
+                                submit_result = try_submit_json(submit_url, payload, base_url=url)
+                                result["submit_result"] = submit_result
+                                return result
+                            # otherwise fall through to normal flow
+                except Exception as e:
+                    logger.debug("llm quick extraction failed: %s", e)
+                    result.setdefault("llm_errors", []).append(str(e))
+        except Exception as e:
+            logger.debug("llm detection error: %s", e)
 
         # find submit url (may be relative)
         submit_url = find_submit_url_from_page(page)
@@ -203,7 +368,6 @@ def solve_quiz(email, secret, url, deadline):
             parsed = None
 
         # Detect instruction to scrape a relative path (e.g., "Scrape /demo-scrape-data?...")
-        # If found, resolve and visit it, then try to extract a secret code.
         try:
             if body_text:
                 m_rel = re.search(r"(\/[^\s'\"<>]*demo-scrape-data[^\s'\"<>]*)", body_text, flags=re.IGNORECASE)
@@ -221,18 +385,14 @@ def solve_quiz(email, secret, url, deadline):
                         result["scraped_secret_candidate"] = secret_code
                         # If found, prepare payload and submit to submit_url (resolve relative)
                         if secret_code:
-                            # build canonical scrape url (without query string)
                             parsed_url = urlparse(scrape_url)
                             canonical_scrape_url = urlunparse(parsed_url._replace(query="", params="", fragment=""))
-
-                            # IMPORTANT: use the start_url (task URL) as the 'url' field the submit endpoint expects.
-                            # fallback to canonical_scrape_url if result["start_url"] is missing.
-                            payload_url = result.get("start_url") or canonical_scrape_url
 
                             payload = {
                                 "email": email,
                                 "secret": secret,
-                                "url": payload_url,
+                                # canonical URL WITHOUT query params
+                                "url": canonical_scrape_url,
                                 "answer": secret_code
                             }
 
@@ -240,7 +400,7 @@ def solve_quiz(email, secret, url, deadline):
                                 "Posting scraped secret payload to submit_url=%s resolved=%s payload=%s",
                                 submit_url,
                                 resolve_url(submit_url, scrape_url),
-                                {"email": email, "url": payload_url, "answer": secret_code}
+                                {"email": email, "url": canonical_scrape_url, "answer": secret_code}
                             )
 
                             if submit_url:
@@ -316,6 +476,119 @@ def solve_quiz(email, secret, url, deadline):
                 logger.exception("PDF processing error")
                 result["pdf_error"] = str(e)
                 return result
+
+        # ---------------------------
+        # NEW: handle CSV files mentioned on the page
+        # ---------------------------
+        try:
+            # look for CSV links on the page
+            csv_links = []
+            try:
+                anchors = page.query_selector_all("a")
+                for a in anchors:
+                    href = a.get_attribute("href")
+                    type_attr = a.get_attribute("type") if a else None
+                    text = a.inner_text() if a else ""
+                    if not href:
+                        continue
+                    href_l = href.lower()
+                    if href_l.endswith(".csv") or "csv" in (type_attr or "").lower() or ".csv?" in href_l:
+                        csv_links.append(href)
+                    # also catch links with CSV-like filenames in text
+                    elif ".csv" in (text or "").lower():
+                        csv_links.append(href)
+            except Exception:
+                csv_links = []
+
+            # also check for "CSV file" instruction and a relative endpoint
+            if not csv_links and body_text:
+                # try to find e.g. "/demo-audio-data?..." patterns
+                m_csv_rel = re.search(r"(\/[^\s'\"<>]*?(?:csv|demo-audio-data)[^\s'\"<>]*)", body_text, flags=re.IGNORECASE)
+                if m_csv_rel:
+                    csv_links.append(m_csv_rel.group(1))
+
+            if csv_links:
+                # Decide which CSV to use; prefer absolute or first one
+                chosen = csv_links[0]
+                csv_url = resolve_url(chosen, page.url)
+                result["detected_csv_links"] = csv_links
+                result["resolved_csv_url"] = csv_url
+
+                # attempt to extract cutoff from the page text if present
+                cutoff = None
+                if body_text:
+                    m_cut = re.search(r"Cutoff[:\s]*([0-9]+)", body_text, flags=re.IGNORECASE)
+                    if m_cut:
+                        cutoff = float(m_cut.group(1))
+                        result["detected_cutoff"] = cutoff
+
+                # download csv
+                try:
+                    r = httpx.get(csv_url, timeout=30.0)
+                    r.raise_for_status()
+                    tmpdir = tempfile.mkdtemp()
+                    csv_path = os.path.join(tmpdir, "data.csv")
+                    with open(csv_path, "wb") as f:
+                        f.write(r.content)
+                    result["downloaded_csv"] = csv_path
+
+                    # read csv into pandas
+                    try:
+                        df = pd.read_csv(csv_path)
+                        result["csv_shape"] = df.shape
+                        # find numeric columns
+                        numeric_cols = [c for c in df.columns if is_numeric_series(df[c])]
+                        result["csv_numeric_columns"] = numeric_cols
+
+                        answer_value = None
+                        answer_reason = None
+
+                        if numeric_cols:
+                            first_col = numeric_cols[0]
+                            # coerce to numeric
+                            df[first_col] = pd.to_numeric(df[first_col].astype(str).str.replace(r"[^0-9\.\-]", "", regex=True), errors="coerce")
+                            if cutoff is not None:
+                                mask = df[first_col] >= cutoff
+                                # sum values >= cutoff
+                                answer_value = float(df.loc[mask, first_col].sum(min_count=1) or 0.0)
+                                answer_reason = f"sum_{first_col}_>=_cutoff"
+                            else:
+                                # no cutoff: sum the column
+                                answer_value = float(df[first_col].sum(min_count=1) or 0.0)
+                                answer_reason = f"sum_{first_col}"
+                        else:
+                            # fallback: count rows
+                            answer_value = int(len(df))
+                            answer_reason = "row_count"
+
+                        result["csv_answer"] = answer_value
+                        result["csv_answer_reason"] = answer_reason
+
+                        # build payload using the task's start_url (as other steps do)
+                        submit_payload = {
+                            "email": email,
+                            "secret": secret,
+                            "url": result.get("start_url") or url,
+                            "answer": answer_value
+                        }
+
+                        # keep a preview (mask secret)
+                        preview = dict(submit_payload)
+                        preview["secret"] = "***"
+                        result["submit_payload_preview"] = preview
+
+                        if submit_url:
+                            submit_result = try_submit_json(submit_url, submit_payload, base_url=csv_url)
+                            result["submit_result"] = submit_result
+                        else:
+                            result["submit_result"] = {"error": "no submit_url_found"}
+                        return result
+                    except Exception as e:
+                        result["csv_read_error"] = str(e)
+                except Exception as e:
+                    result["csv_download_error"] = str(e)
+        except Exception as e:
+            logger.debug("csv-detection error: %s", e)
 
         # Try reading HTML tables in the loaded page
         try:
