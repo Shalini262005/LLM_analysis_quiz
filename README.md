@@ -1,43 +1,164 @@
-# LLM Analysis Quiz Solver — Render-ready reference implementation
+# 🚀 LLM Analysis Quiz – Automated Solver
 
-## This FastAPI service:
-- accepts quiz tasks
-- renders JS pages with Playwright
-- downloads PDFs/tables
-- computes simple answers
-- POSTs them to the quiz submit URL
+An automated multi-step quiz solver that renders JavaScript-powered pages, extracts data (CSV, PDF, HTML tables, scraped pages), analyzes them programmatically, and posts the correct answers back to the quiz server.  
+Supports optional LLM-powered reasoning for ambiguous tasks.
 
-###############################################
-## Quick local / Render notes
-###############################################
+## 📘 Overview
 
-### Build command (Render or local)
-pip install -r requirements.txt && python -m playwright install --with-deps
+Your server receives a POST request like:
 
-### Start command (Render)
+```json
+{
+  "email": "your email",
+  "secret": "your secret",
+  "url": "https://example.com/quiz-834"
+}
+```
+
+Your solver must:
+
+1. Validate inputs  
+2. Open the provided quiz URL in a **headless browser**  
+3. Understand the instructions from the webpage  
+4. Download → clean → parse → analyze required data  
+5. Submit the answer to the submit URL found on the page  
+6. Follow the chain if a new quiz URL is returned  
+
+This repository contains a fully automated engine that accomplishes this.
+
+## ✨ Features
+
+### 🕸 Web Scraping
+- Full JavaScript rendering using **Playwright**
+- Extracts from:
+  - Dynamic DOM
+  - `<pre>` embedded JSON
+  - Relative & absolute URLs
+  - Hidden submit links
+
+### 📂 Data Extraction
+- **CSV parsing** with:
+  - Header detection
+  - Numeric cleaning
+  - Cutoff filtering
+  - Column-name inference
+
+- **PDF parsing** with:
+  - Page-by-page table extraction
+  - Value-column detection
+
+- **HTML table parsing** via Pandas
+
+### 🔍 Scrape Logic
+Supports demo patterns like:
+```
+Scrape /demo-scrape-data?... → extract secret → POST to /submit
+```
+
+### 🤖 Optional LLM Module
+Allows AI assistance for:
+- OCR  
+- Audio transcription  
+- Answer extraction when unclear  
+- Fallback interpretation of instructions  
+
+Activate with:
+```
+ENABLE_LLM=1
+OPENAI_API_KEY=your-key
+```
+
+### 🧩 Multi-Step Quiz Flow
+Automatically follows:
+```
+quiz → submit → next quiz → submit → ... → end
+```
+
+## 📁 Project Structure
+
+```
+app/
+ ├── main.py              # FastAPI entrypoint
+ ├── solver.py            # Core multi-step solver
+ ├── utils/
+ │     └── pdf_utils.py   # PDF parsing helpers
+ ├── requirements.txt
+ └── README.md
+```
+
+## ⚙️ Installation
+
+### 1. Clone repo & create venv
+```bash
+git clone <repo-url>
+cd llm_quiz_analysis
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 2. Install dependencies
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Install browsers for Playwright
+```bash
+python -m playwright install
+```
+
+### 4. Start server
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+## 🔧 Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `ENABLE_LLM` | Set to `1` to turn on optional LLM reasoning |
+| `OPENAI_API_KEY` | API Key for LLM calls |
+| `LLM_MODEL` | LLM model (default: `gpt-4o-mini`) |
+| `PORT` | Required for Render deployment |
+
+## 🧪 Testing With the Demo Quiz
+
+### Sample PowerShell Test Script
+
+```powershell
+$endpoint = "https://<your-deployment-url>/quiz"
+
+$payload = @{
+  email  = "xxxxxxxxxxxxxxxxxxxxxxxxx"
+  secret = "test-secret-123"
+  url    = "https://tds-llm-analysis.s-anand.net/demo"
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri $endpoint -ContentType "application/json" -Body $payload | ConvertTo-Json -Depth 10
+```
+
+If everything is correct, you will see:
+- Scrape task solved ✔  
+- CSV task solved ✔  
+- Final `"correct": true` response ✔  
+
+## 🏗 Deployment Guide (Render)
+
+### Build command
+```
+pip install -r requirements.txt
+```
+
+### Start command
+```
 gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT --workers 1
+```
 
-###############################################
-## Environment variables (set these in Render)
-###############################################
+### Install Playwright dependencies
+```
+python -m playwright install --with-deps
+```
 
-**QUIZ_SECRET  - your secret string (must match Google Form)**
-**TIME_BUDGET  - optional, default 180 seconds**
-**LOG_LEVEL    - optional (e.g., INFO)**
+## 📄 License
 
-###############################################
-## Test using the demo
-###############################################
+MIT License
 
-curl -X POST https://<your-render-url>/quiz \
-  -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","secret":"<YOUR_SECRET>","url":"https://tds-llm-analysis.s-anand.net/demo"}'
-
-###############################################
-## Notes
-###############################################
-
-- Keep QUIZ_SECRET secret — do NOT commit it.
-- Ensure Playwright dependencies install:
-     python -m playwright install --with-deps
-- Render filesystem is ephemeral; temp files go to system temp dirs.
