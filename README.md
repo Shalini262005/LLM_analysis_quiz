@@ -5,7 +5,7 @@ Supports optional LLM-powered reasoning for ambiguous tasks.
 
 ## 📘 Overview
 
-Your server receives a POST request like:
+Server receives a POST request like:
 
 ```json
 {
@@ -15,7 +15,7 @@ Your server receives a POST request like:
 }
 ```
 
-Your solver must:
+Solver must:
 
 1. Validate inputs  
 2. Open the provided quiz URL in a **headless browser**  
@@ -86,31 +86,6 @@ app/
  └── README.md
 ```
 
-## ⚙️ Installation
-
-### 1. Clone repo & create venv
-```bash
-git clone <repo-url>
-cd llm_quiz_analysis
-python -m venv .venv
-source .venv/bin/activate
-```
-
-### 2. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Install browsers for Playwright
-```bash
-python -m playwright install
-```
-
-### 4. Start server
-```bash
-uvicorn app.main:app --reload --port 8000
-```
-
 ## 🔧 Environment Variables
 
 | Variable | Description |
@@ -136,27 +111,10 @@ $payload = @{
 Invoke-RestMethod -Method Post -Uri $endpoint -ContentType "application/json" -Body $payload | ConvertTo-Json -Depth 10
 ```
 
-If everything is correct, you will see:
+If everything is correct, the output will have:
 - Scrape task solved ✔  
 - CSV task solved ✔  
 - Final `"correct": true` response ✔  
-
-## 🏗 Deployment Guide (Render)
-
-### Build command
-```
-pip install -r requirements.txt
-```
-
-### Start command
-```
-gunicorn -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT --workers 1
-```
-
-### Install Playwright dependencies
-```
-python -m playwright install --with-deps
-```
 
 ## 📄 License
 
